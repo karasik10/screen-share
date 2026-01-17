@@ -3,179 +3,132 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Экран & Звук (Enhanced)</title>
-    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+    <title>Моя Видеостудия</title>
+    <script src="https://unpkg.com/peerjs@1.4.7/dist/peerjs.min.js"></script>
     <style>
-        body { margin: 0; background: #000; color: #fff; font-family: sans-serif; display: flex; flex-direction: column; align-items: center; height: 100vh; overflow: hidden; }
-        
-        #controls { position: absolute; top: 10px; z-index: 10; background: rgba(0,0,0,0.8); padding: 15px; border-radius: 10px; text-align: center; border: 1px solid #333; max-width: 90%; }
-        
-        button { padding: 12px 20px; border-radius: 6px; border: none; cursor: pointer; font-size: 16px; font-weight: bold; margin: 5px; }
-        .btn-start { background: #27ae60; color: white; }
-        .btn-copy { background: #2980b9; color: white; }
-        .btn-play { background: #e67e22; color: white; display: none; } /* Кнопка если автоплей заблочен */
-        
-        video { width: 100%; height: 100%; object-fit: contain; background: #000; }
-        
-        #status { font-size: 14px; color: #aaa; margin-top: 5px; }
-        input { background: #222; border: 1px solid #444; color: #fff; padding: 8px; border-radius: 4px; width: 220px; text-align: center; margin-top: 5px; }
-        
-        .hidden { display: none !important; }
+        body { 
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
+            background-color: #2c2f33; 
+            color: white; 
+            display: flex; 
+            flex-direction: column; 
+            align-items: center; 
+            margin: 0; 
+            padding: 20px; 
+        }
+        h1 { margin-bottom: 20px; }
+        .dashboard {
+            background: #23272a;
+            padding: 20px;
+            border-radius: 8px;
+            text-align: center;
+            margin-bottom: 20px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+        }
+        input {
+            padding: 10px;
+            border-radius: 4px;
+            border: none;
+            width: 200px;
+        }
+        button {
+            padding: 10px 20px;
+            background-color: #7289da;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: bold;
+        }
+        button:hover { background-color: #5b6eae; }
+        #my-id { font-weight: bold; color: #43b581; user-select: all; cursor: pointer;}
+        .video-container {
+            display: flex;
+            justify-content: center;
+            gap: 20px;
+            flex-wrap: wrap;
+        }
+        video {
+            width: 400px;
+            height: 300px;
+            background-color: #000;
+            border-radius: 8px;
+            border: 2px solid #7289da;
+            object-fit: cover;
+        }
     </style>
 </head>
 <body>
 
-    <div id="controls">
-        <div id="ui-start">
-            <h3>🚀 Создать трансляцию</h3>
-            <button class="btn-start" onclick="startStream()">Запустить и получить ссылку</button>
-        </div>
+    <h1>Студия Связи</h1>
 
-        <div id="ui-stream" class="hidden">
-            <div id="status">Трансляция активна. Ждем друга...</div>
-            <input type="text" id="share-link" readonly onclick="this.select()">
-            <br>
-            <button class="btn-copy" onclick="copyLink()">Копировать ссылку</button>
-        </div>
-
-        <div id="ui-viewer" class="hidden">
-            <h3>👁 Подключение...</h3>
-            <p id="view-status">Соединяемся с сервером...</p>
-            <button id="play-btn" class="btn-play" onclick="forcePlay()">▶ ВКЛЮЧИТЬ ЗВУК И ВИДЕО</button>
+    <div class="dashboard">
+        <p>Твой ID (отправь другу): <span id="my-id" title="Нажми, чтобы скопировать">Загрузка...</span></p>
+        <div>
+            <input type="text" id="remote-id" placeholder="Вставь ID друга">
+            <button onclick="makeCall()">Позвонить</button>
         </div>
     </div>
 
-    <video id="video-player" autoplay playsinline controls></video>
+    <div class="video-container">
+        <div>
+            <h3>Ты</h3>
+            <video id="my-video" autoplay muted playsinline></video>
+        </div>
+        <div>
+            <h3>Собеседник</h3>
+            <video id="friend-video" autoplay playsinline></video>
+        </div>
+    </div>
 
     <script>
-        // Конфигурация с STUN серверами (помогает пробить NAT)
-        const peerConfig = {
-            debug: 2,
-            config: {
-                iceServers: [
-                    { urls: 'stun:stun.l.google.com:19302' },
-                    { urls: 'stun:stun1.l.google.com:19302' },
-                    { urls: 'stun:stun2.l.google.com:19302' }
-                ]
-            }
-        };
+        // Инициализация
+        const peer = new Peer();
+        let myStream;
 
-        const urlParams = new URLSearchParams(window.location.search);
-        const hostIdFromUrl = urlParams.get('id');
-        const videoElem = document.getElementById('video-player');
-        let peer;
-        let localStream;
+        // 1. Получаем доступ к камере и микрофону сразу при входе
+        navigator.mediaDevices.getUserMedia({ video: true, audio: true })
+            .then(stream => {
+                myStream = stream;
+                const myVideo = document.getElementById('my-video');
+                myVideo.srcObject = stream;
 
-        // === СЦЕНАРИЙ ЗРИТЕЛЯ ===
-        if (hostIdFromUrl) {
-            document.getElementById('ui-start').classList.add('hidden');
-            document.getElementById('ui-viewer').classList.remove('hidden');
-            initViewer(hostIdFromUrl);
-        }
-
-        // === ЛОГИКА ХОСТА ===
-        async function startStream() {
-            try {
-                // Захват
-                localStream = await navigator.mediaDevices.getDisplayMedia({
-                    video: { cursor: "always", frameRate: 60 },
-                    audio: {
-                        echoCancellation: false, 
-                        noiseSuppression: false,
-                        autoGainControl: false 
-                    }
-                });
-
-                // Показываем себе (без звука)
-                videoElem.srcObject = localStream;
-                videoElem.muted = true;
-
-                // Создаем Peer
-                peer = new Peer(null, peerConfig);
-
-                peer.on('open', (id) => {
-                    const shareUrl = location.origin + location.pathname + '?id=' + id;
-                    document.getElementById('ui-start').classList.add('hidden');
-                    document.getElementById('ui-stream').classList.remove('hidden');
-                    document.getElementById('share-link').value = shareUrl;
-                });
-
-                // ХИТРОСТЬ: Вместо ожидания звонка, мы ждем DATA-соединение от зрителя,
-                // а потом САМИ звоним ему с видео. Это надежнее.
-                peer.on('connection', (conn) => {
-                    conn.on('open', () => {
-                        document.getElementById('status').innerText = "Друг на связи! Отправляем поток...";
-                        // Звоним другу
-                        const call = peer.call(conn.peer, localStream);
+                // Настраиваем прием звонков
+                peer.on('call', call => {
+                    // Отвечаем на звонок своим потоком
+                    call.answer(stream); 
+                    const video = document.getElementById('friend-video');
+                    
+                    call.on('stream', userVideoStream => {
+                        video.srcObject = userVideoStream;
                     });
                 });
-
-                // Если стрим выключили системно
-                localStream.getVideoTracks()[0].onended = () => location.reload();
-
-            } catch (err) {
-                alert("Ошибка: " + err.message);
-            }
-        }
-
-        function copyLink() {
-            const copyText = document.getElementById("share-link");
-            copyText.select();
-            document.execCommand("copy");
-            alert("Скопировано!");
-        }
-
-        // === ЛОГИКА ЗРИТЕЛЯ ===
-        function initViewer(hostId) {
-            peer = new Peer(null, peerConfig);
-
-            peer.on('open', (myId) => {
-                document.getElementById('view-status').innerText = "Стучимся к хосту...";
-                
-                // 1. Просто соединяемся (DataConnection), чтобы передать свой ID
-                const conn = peer.connect(hostId);
-                
-                conn.on('open', () => {
-                    document.getElementById('view-status').innerText = "Соединено! Ждем видео...";
-                });
+            })
+            .catch(err => {
+                alert('Ошибка доступа к камере: ' + err);
             });
 
-            // 2. Ждем входящего звонка от Хоста
-            peer.on('call', (call) => {
-                document.getElementById('view-status').innerText = "Принимаем поток...";
-                call.answer(); // Отвечаем
-                
-                call.on('stream', (remoteStream) => {
-                    // Скрываем интерфейс
-                    document.getElementById('controls').classList.add('hidden');
-                    
-                    videoElem.srcObject = remoteStream;
-                    videoElem.muted = false;
+        // 2. Показываем свой ID
+        peer.on('open', id => {
+            const idSpan = document.getElementById('my-id');
+            idSpan.innerText = id;
+            idSpan.onclick = () => {
+                navigator.clipboard.writeText(id);
+                alert('ID скопирован!');
+            };
+        });
 
-                    // Пытаемся запустить воспроизведение
-                    const playPromise = videoElem.play();
-                    
-                    if (playPromise !== undefined) {
-                        playPromise.catch(error => {
-                            // Если браузер заблокировал автоплей
-                            document.getElementById('controls').classList.remove('hidden');
-                            document.getElementById('ui-viewer').classList.add('hidden');
-                            document.getElementById('play-btn').style.display = 'block';
-                            document.getElementById('play-btn').innerText = "⚠ НАЖМИ СЮДА, ЧТОБЫ СМОТРЕТЬ";
-                        });
-                    }
-                });
+        // 3. Функция звонка другу
+        function makeCall() {
+            const remoteId = document.getElementById('remote-id').value;
+            if (!remoteId) return alert('Введите ID друга!');
+
+            const call = peer.call(remoteId, myStream);
+            const video = document.getElementById('friend-video');
+
+            call.on('stream', userVideoStream => {
+                video.srcObject = userVideoStream;
             });
-
-            peer.on('error', (err) => {
-                document.getElementById('view-status').innerText = "Ошибка: " + err.type;
-                console.error(err);
-            });
-        }
-
-        function forcePlay() {
-            videoElem.play();
-            document.getElementById('controls').classList.add('hidden');
         }
     </script>
 </body>
