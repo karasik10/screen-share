@@ -3,125 +3,150 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>P2P Screen Share (WebRTC)</title>
+    <title>Экран & Звук (P2P)</title>
     <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
     <style>
-        body { font-family: sans-serif; background: #1a1a1a; color: #fff; text-align: center; padding: 20px; }
-        input { padding: 10px; border-radius: 5px; border: none; width: 250px; }
-        button { padding: 10px 20px; border-radius: 5px; border: none; cursor: pointer; font-weight: bold; transition: 0.2s; }
-        .btn-host { background: #4CAF50; color: white; }
-        .btn-connect { background: #2196F3; color: white; }
-        button:hover { opacity: 0.9; }
-        video { width: 90%; max-width: 1200px; border: 2px solid #333; margin-top: 20px; background: #000; border-radius: 8px; }
-        .box { background: #2d2d2d; padding: 20px; margin: 10px auto; max-width: 600px; border-radius: 10px; }
-        #status { color: #aaa; margin-top: 10px; font-size: 0.9em; }
+        body { margin: 0; background: #000; color: #fff; font-family: sans-serif; display: flex; flex-direction: column; align-items: center; height: 100vh; overflow: hidden; }
+        
+        #controls { position: absolute; top: 10px; left: 50%; transform: translateX(-50%); z-index: 10; background: rgba(0,0,0,0.7); padding: 15px; border-radius: 10px; text-align: center; backdrop-filter: blur(5px); }
+        
+        button { padding: 12px 24px; border-radius: 6px; border: none; cursor: pointer; font-size: 16px; font-weight: bold; transition: 0.2s; margin: 5px; }
+        .btn-start { background: #27ae60; color: white; }
+        .btn-copy { background: #2980b9; color: white; display: none; }
+        .btn-stop { background: #c0392b; color: white; display: none; }
+        button:hover { filter: brightness(1.1); transform: scale(1.05); }
+
+        video { width: 100%; height: 100%; object-fit: contain; background: #111; }
+        
+        #status { font-size: 14px; color: #ccc; margin-top: 5px; }
+        .link-box { margin-top: 10px; display: none; }
+        input { background: #333; border: 1px solid #555; color: #fff; padding: 5px; border-radius: 4px; width: 250px; text-align: center; }
     </style>
 </head>
 <body>
 
-    <h2>⚡ P2P Демонстрация экрана</h2>
-    <p id="status">Инициализация...</p>
+    <div id="controls">
+        <div id="ui-start">
+            <h3>🔴 Запуск трансляции</h3>
+            <button class="btn-start" onclick="startStream()">Начать демонстрацию</button>
+        </div>
 
-    <div class="box">
-        <h3>Я хочу стримить</h3>
-        <p>Твой ID: <b id="my-id" style="color: #4CAF50; font-family: monospace; font-size: 1.2em;">...</b></p>
-        <button onclick="startScreenShare()" class="btn-host">📡 Начать трансляцию</button>
-        <p><small>Скопируй свой ID и отправь другу</small></p>
+        <div id="ui-stream" style="display:none;">
+            <div id="status">Трансляция активна</div>
+            <div class="link-box" style="display:block;">
+                <input type="text" id="share-link" readonly>
+                <button class="btn-copy" style="display:inline-block;" onclick="copyLink()">Скопировать ссылку</button>
+            </div>
+        </div>
+
+        <div id="ui-viewer" style="display:none;">
+            <h3>👁 Просмотр</h3>
+            <p id="view-status">Подключение к стриму...</p>
+        </div>
     </div>
 
-    <div class="box">
-        <h3>Я хочу смотреть</h3>
-        <input type="text" id="remote-id" placeholder="Вставь ID друга сюда">
-        <button onclick="connectToPeer()" class="btn-connect">📺 Подключиться</button>
-    </div>
-
-    <video id="remote-video" autoplay playsinline controls></video>
+    <video id="video-player" autoplay playsinline controls></video>
 
     <script>
-        // Инициализация PeerJS (используем их бесплатный облачный сервер для сигнализации)
-        const peer = new Peer(null, {
-            debug: 2
-        });
+        // Ищем ID в ссылке (например, site.com/?id=qwerty)
+        const urlParams = new URLSearchParams(window.location.search);
+        const targetPeerId = urlParams.get('id');
 
+        const videoElem = document.getElementById('video-player');
+        let peer;
         let localStream;
 
-        // Когда получили свой ID от сервера
-        peer.on('open', (id) => {
-            document.getElementById('my-id').innerText = id;
-            document.getElementById('status').innerText = "Готов к работе. Твой статус: Online";
-        });
+        // --- ЛОГИКА: ЕСЛИ ЕСТЬ ID В ССЫЛКЕ, ЗНАЧИТ МЫ ЗРИТЕЛЬ ---
+        if (targetPeerId) {
+            document.getElementById('ui-start').style.display = 'none';
+            document.getElementById('ui-viewer').style.display = 'block';
+            
+            initViewer(targetPeerId);
+        }
 
-        // Ошибка при подключении
-        peer.on('error', (err) => {
-            console.error(err);
-            alert("Ошибка: " + err.type);
-        });
-
-        // ------------------- ЛОГИКА ХОСТА (СТРИМЕРА) -------------------
-        
-        async function startScreenShare() {
+        // --- ЛОГИКА ХОСТА (СТРИМЕРА) ---
+        async function startStream() {
             try {
-                // Запрашиваем экран и системный звук
-                // ВАЖНО: В Chrome нужно поставить галочку "Share system audio"
+                // Захват экрана + системного звука
                 localStream = await navigator.mediaDevices.getDisplayMedia({
-                    video: {
-                        cursor: "always",
-                        frameRate: 60,  // Пытаемся выжать 60 FPS
-                        height: 1080
-                    },
+                    video: { cursor: "always", frameRate: 60, height: 1080 },
                     audio: {
                         echoCancellation: false,
                         noiseSuppression: false,
-                        sampleRate: 44100
+                        autoGainControl: false // Важно для качества музыки/игры
                     }
                 });
 
-                // Показываем свое видео у себя (опционально, без звука чтобы не фонило)
-                const videoElement = document.getElementById('remote-video');
-                videoElement.srcObject = localStream;
-                videoElement.muted = true; 
+                // Показываем стрим самому себе (но без звука, чтобы не фонило)
+                videoElem.srcObject = localStream;
+                videoElem.muted = true; 
 
-                document.getElementById('status').innerText = "Трансляция запущена. Ждем подключения друга...";
+                // Инициализация PeerJS
+                peer = new Peer();
 
-                // Обработчик входящего звонка (когда друг вводит ID)
-                peer.on('call', (call) => {
-                    call.answer(localStream); // Отвечаем потоком экрана
-                    document.getElementById('status').innerText = "Друг подключился!";
+                peer.on('open', (id) => {
+                    // Генерируем ссылку для друга
+                    const shareUrl = window.location.origin + window.location.pathname + '?id=' + id;
+                    
+                    // Обновляем UI
+                    document.getElementById('ui-start').style.display = 'none';
+                    document.getElementById('ui-stream').style.display = 'block';
+                    document.getElementById('share-link').value = shareUrl;
+                    document.getElementById('status').innerText = "Ожидание подключения друга...";
                 });
 
-                // Если стрим остановили средствами браузера
+                // Когда друг подключается
+                peer.on('call', (call) => {
+                    call.answer(localStream);
+                    document.getElementById('status').innerText = "🔴 Друг смотрит трансляцию!";
+                });
+
+                // Если закрыл доступ к экрану кнопкой браузера
                 localStream.getVideoTracks()[0].onended = () => {
-                    document.getElementById('status').innerText = "Трансляция остановлена.";
+                    alert("Трансляция завершена");
+                    location.reload();
                 };
 
             } catch (err) {
-                console.error("Ошибка захвата экрана:", err);
-                alert("Не удалось захватить экран. Убедитесь, что дали разрешение.");
+                console.error(err);
+                alert("Ошибка: " + err.message);
             }
         }
 
-        // ------------------- ЛОГИКА ЗРИТЕЛЯ -------------------
+        function copyLink() {
+            const copyText = document.getElementById("share-link");
+            copyText.select();
+            document.execCommand("copy");
+            alert("Ссылка скопирована! Отправь её другу.");
+        }
 
-        function connectToPeer() {
-            const remoteId = document.getElementById('remote-id').value.trim();
-            if (!remoteId) return alert("Введите ID друга!");
+        // --- ЛОГИКА ЗРИТЕЛЯ ---
+        function initViewer(hostId) {
+            peer = new Peer();
 
-            document.getElementById('status').innerText = "Подключение к другу...";
-
-            // Звоним другу (пока без своего потока, только прием)
-            const call = peer.call(remoteId, new MediaStream()); // Отправляем пустой поток, чтобы инициировать связь
-
-            call.on('stream', (remoteStream) => {
-                const videoElement = document.getElementById('remote-video');
-                videoElement.srcObject = remoteStream;
-                videoElement.muted = false; // Включаем звук у зрителя
-                videoElement.play();
-                document.getElementById('status').innerText = "Просмотр активен!";
+            peer.on('open', () => {
+                document.getElementById('view-status').innerText = "Соединение с хостом...";
+                connectToHost(hostId);
             });
 
-            call.on('error', (err) => {
-                console.error(err);
-                alert("Ошибка соединения.");
+            peer.on('error', (err) => {
+                document.getElementById('view-status').innerText = "Ошибка: " + err.type;
+            });
+        }
+
+        function connectToHost(hostId) {
+            // Звоним хосту
+            const call = peer.call(hostId, new MediaStream()); // Шлем пустышку, чтобы открыть канал
+
+            call.on('stream', (remoteStream) => {
+                document.getElementById('controls').style.display = 'none'; // Скрываем меню у зрителя
+                videoElem.srcObject = remoteStream;
+                videoElem.muted = false; // Включаем звук
+                videoElem.play().catch(e => console.log("Нужен клик для звука"));
+            });
+
+            call.on('close', () => {
+                alert("Трансляция завершена");
             });
         }
     </script>
